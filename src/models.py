@@ -12,6 +12,7 @@ from torch import nn
 
 
 def softplus_inverse(x):
+    """log(exp(x) - 1)"""
     return torch.where(x > 10, x, x.expm1().log())
 
 
@@ -100,7 +101,8 @@ class CategoricalDUN(VariationalDepth):
 
 
 PositivePoisson = lambda p: torch.distributions.TransformedDistribution(
-    torch.distributions.Poisson(p, validate_args=False), torch.distributions.AffineTransform(1, 1)
+    torch.distributions.Poisson(p, validate_args=False),
+    torch.distributions.AffineTransform(1, 1),
 )
 
 
@@ -260,7 +262,13 @@ class UnboundedNN(nn.Module):
             logp_L_list.append(logp_L.item())
 
             if y is not None:
-                logpy = -nn.CrossEntropyLoss(reduction="mean")(current_output, y) * self.n_obs
+                if self.mode == "classification":
+                    logpy = -nn.CrossEntropyLoss(reduction="mean")(current_output, y) * self.n_obs
+                elif self.mode == "regression":
+                    # logpy = -nn.GaussianNLLLoss(reduction="mean")(current_output, y, torch.ones_like(y)) * self.n_obs
+                    logpy = (-((current_output - y) ** 2).mean() / 2 - np.log(2 * np.pi) / 2) * self.n_obs
+                else:
+                    raise NotImplementedError
             else:
                 logpy = torch.tensor(0.0, device=X.device)
 
@@ -278,10 +286,16 @@ class UnboundedNN(nn.Module):
 
             logp_list.append(logp.item())
 
-            current_predictions = nn.Softmax(dim=-1)(current_output)
-            predictions_per_layer.append(current_predictions)
+            if self.mode == "classification":
+                current_predictions = nn.Softmax(dim=-1)(current_output)
+            elif self.mode == "regression":
+                current_predictions = current_output
+            else:
+                raise NotImplementedError
 
+            predictions_per_layer.append(current_predictions)
             global_predictions = global_predictions + (a * current_predictions).detach()
+
             i += 1
 
         entropy_qL = torch.distributions.Categorical(alpha_L).entropy()
@@ -300,200 +314,3 @@ class UnboundedNN(nn.Module):
     def predict_classification(self):
         assert self.mode == "classification"
 
-
-def SCE(predictions, labels, n_bins=10, n_labels=10):
-    """Bin k,b contains prediction of label k w probability in [b/B, (b+1)/B]"""
-    confidence = np.zeros((n_bins, n_labels))
-    accuracy = np.zeros((n_bins, n_labels))
-    nbk = np.zeros((n_bins, n_labels))
-
-    for b, (bl, br) in enumerate(zip(np.linspace(0, 1.0001, n_bins + 1), np.linspace(0, 1.0001, n_bins + 1)[1:])):
-        for k in range(n_labels):
-            indices = ((predictions[:, k] < br) & (predictions[:, k] >= bl)).nonzero()[0]
-            nbk[b, k] = len(indices)
-            confidence[b, k] = predictions[indices, k].mean()
-            accuracy[b, k] = np.mean(labels[indices] == k)
-    np.nan_to_num(confidence, copy=False)
-    np.nan_to_num(accuracy, copy=False)
-
-    return (np.abs(confidence - accuracy) * nbk).sum() / (n_labels * len(labels))
-
-
-def ECE(
-    predictions,
-    labels,
-    n_bins=10,
-):
-    """Bin k,b contains prediction of label k w probability in [b/B, (b+1)/B]"""
-    confidence = np.zeros((n_bins,))
-    accuracy = np.zeros((n_bins,))
-    nb = np.zeros((n_bins,))
-
-    predictions_label = np.argmax(predictions, axis=1)
-    predictions_max = np.max(predictions, axis=1)
-
-    for b, (bl, br) in enumerate(zip(np.linspace(0, 1.0001, n_bins + 1), np.linspace(0, 1.0001, n_bins + 1)[1:])):
-        indices = ((predictions_max < br) & (predictions_max >= bl)).nonzero()[0]
-        nb[b] = len(indices)
-        confidence[b] = predictions_max[indices].mean()
-        accuracy[b] = np.mean(labels[indices] == predictions_label[indices])
-    np.nan_to_num(confidence, copy=False)
-    np.nan_to_num(accuracy, copy=False)
-
-    assert sum(nb) == len(labels)
-
-    return (np.abs(confidence - accuracy) * nb).sum() / (len(labels))
-
-
-def ACE(
-    predictions,
-    labels,
-    n_bins=10,
-):
-    """Bin k,b contains prediction of label k w probability in [b/B, (b+1)/B]"""
-    confidence = np.zeros((n_bins,))
-    accuracy = np.zeros((n_bins,))
-    nb = np.zeros((n_bins,))
-
-    predictions_label = np.argmax(predictions, axis=1)
-    predictions_max = np.max(predictions, axis=1)
-
-    n_bins = min(n_bins, len(np.unique(predictions_max)))
-
-    bins = np.quantile(predictions_max, np.linspace(0, 1, n_bins + 1))
-    bins[-1] += 0.0001
-    for b, (bl, br) in enumerate(zip(bins, bins[1:])):
-        indices = ((predictions_max < br) & (predictions_max >= bl)).nonzero()[0]
-        nb[b] = len(indices)
-        confidence[b] = predictions_max[indices].mean()
-        accuracy[b] = np.mean(labels[indices] == predictions_label[indices])
-    np.nan_to_num(confidence, copy=False)
-    np.nan_to_num(accuracy, copy=False)
-
-    return (np.abs(confidence - accuracy) * nb).sum() / (len(labels))
-
-
-def train_one_epoch(
-    epoch,
-    train_loader,
-    valid_loader,
-    test_loader,
-    model: UnboundedNN,
-    optimizer,
-    scheduler,
-    PREFIX="./",
-    normalize_loss=False,
-):
-    # ############### TRAINING  ##################
-    train_loss_epoch = 0
-    iterations = 0
-
-    start_time = time.time()
-    model.train()
-    for features, labels in tqdm.tqdm(train_loader):
-        optimizer.zero_grad()
-        features = features.to(model.device)
-        labels = labels.to(model.device)
-        loss = model.loss(features, labels)
-        if normalize_loss:
-            loss = loss / model.n_obs
-        train_loss_epoch += loss.item()
-
-        loss.backward()
-        optimizer.step()
-        iterations += 1
-    train_loss_epoch = train_loss_epoch / iterations
-    train_one_epoch_time = time.time() - start_time
-
-    if isinstance(model, UnboundedNN):
-        depth_max = model.current_depth
-        depth_mean = model.variational_posterior_L.mean()
-    else:
-        depth_max = model.n_layers
-        depth_mean = model.n_layers
-
-    # ############### VALIDATION  ##################
-    accuracy_counts = 0
-    model.eval()
-    validation_predictive_loss = torch.tensor(0.0)
-    validation_brier_score = torch.tensor(0.0)
-    for features, labels in valid_loader:
-        features = features.to(model.device)
-        labels = labels.cpu()
-        pred = model(features)["predictions_global"].detach().cpu()
-        validation_predictive_loss += torch.gather(pred, 1, labels.view(-1, 1)).log().sum()
-        validation_brier_score += (pred.pow(2).sum() + (1 - 2 * torch.gather(pred, 1, labels.view(-1, 1))).sum()).item()
-        accuracy_counts += (torch.max(pred, dim=1).indices == labels).sum().item()
-
-    if len(valid_loader.sampler):
-        validation_accuracy = accuracy_counts / len(valid_loader.sampler)
-    else:
-        validation_accuracy = 0
-    validation_predictive_loss = validation_predictive_loss.item()
-
-    # ############### TEST  ##################
-    accuracy_counts = 0
-    accuracy_counts_per_layer = 0
-    predictions = []
-    true_labels = []
-    test_predictive_loss = 0
-    brier_score = 0
-    for features, labels in test_loader:
-        features = features.to(model.device)
-        labels = labels.cpu()
-        tmp = model(features)
-        pred = tmp["predictions_global"].detach().cpu()
-        accuracy_counts_per_layer_batch = np.array(
-            [(torch.max(p.detach().cpu(), dim=1).indices == labels).sum().item() for p in tmp["predictions_per_layer"]]
-        )
-        accuracy_counts_per_layer += accuracy_counts_per_layer_batch
-        predictions.append(pred)
-        true_labels.append(labels)
-        test_predictive_loss += torch.gather(pred, 1, labels.view(-1, 1)).log().sum()
-        brier_score += (pred.pow(2).sum() + (1 - 2 * torch.gather(pred, 1, labels.view(-1, 1))).sum()).item()
-        accuracy_counts += (torch.max(pred, dim=1).indices == labels).sum().item()
-
-    accuracy_counts_per_layer = accuracy_counts_per_layer / len(test_loader.sampler)
-    accuracy = accuracy_counts / len(test_loader.sampler)
-    predictions = torch.cat(predictions, dim=0).numpy()
-    true_labels = torch.cat(true_labels, dim=0).numpy()
-    sce = SCE(predictions, true_labels, 10, model.out_dimension)
-    ace = ACE(predictions, true_labels, 20)
-    ece = ECE(predictions, true_labels, 20)
-    test_predictive_loss = test_predictive_loss.item()
-
-    print(
-        "Epoch: {}, Train Loss: {:.8f}, Val Accuracy: {:.8f}, Mean Post L: {:.2f}".format(
-            epoch + 1, train_loss_epoch, accuracy, depth_mean
-        ),
-    )
-
-    tmp = pd.read_csv(PREFIX + "tmp.%s.csv" % model.model_name, index_col=0)
-    df_args = {
-        "depth": [depth_max],
-        "nu_L": depth_mean,
-        "test_accuracy": accuracy,
-        "validation_accuracy": validation_accuracy,
-        "test_sce": sce,
-        "test_ace": ace,
-        "test_ece": ece,
-        "test_predictive_LL": test_predictive_loss,
-        "validation_predictive_LL": validation_predictive_loss,
-        "lr": scheduler.get_last_lr()[0],
-        "test_brier": brier_score,
-        "validation_brier": validation_brier_score,
-        "train_time_one_epoch": train_one_epoch_time,
-        "size_train": len(train_loader.sampler),
-        "size_validation": len(valid_loader.sampler),
-        "size_test": len(test_loader.sampler),
-        "train_loss": train_loss_epoch,
-    }
-
-    for i, acc in enumerate(accuracy_counts_per_layer):
-        df_args["test_accuracy_layer_%d" % (i)] = acc
-
-    tmp = tmp.append(pd.DataFrame(df_args))
-    tmp.to_csv(PREFIX + "tmp2.%s.csv" % model.model_name)
-    tmp.to_csv(PREFIX + "tmp.%s.csv" % model.model_name)
-
-    return accuracy

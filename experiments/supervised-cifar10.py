@@ -47,9 +47,13 @@ def load_data(batch_size, seed=0, validation_size=0.2, filter_labels=None):
         ]
     )
 
-    train_set = torchvision.datasets.CIFAR10(root="./data", train=True, download=True, transform=transform_train)
+    train_set = torchvision.datasets.CIFAR10(
+        root="./data", train=True, download=True, transform=transform_train
+    )
 
-    test_set = torchvision.datasets.CIFAR10(root="./data", train=False, download=True, transform=transform_test)
+    test_set = torchvision.datasets.CIFAR10(
+        root="./data", train=False, download=True, transform=transform_test
+    )
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -101,7 +105,14 @@ class Bottleneck(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(
+            out_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.conv3 = nn.Conv2d(out_channels, self.expansion * out_channels, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(self.expansion * out_channels)
@@ -257,7 +268,14 @@ if __name__ == "__main__":
     for epoch in range(args.epochs):
         start_time = time.time()
         test_accuracy = train_one_epoch(
-            epoch, train_loader, valid_loader, test_loader, model, optimizer, scheduler, normalize_loss=True
+            epoch,
+            train_loader,
+            valid_loader,
+            test_loader,
+            model,
+            optimizer,
+            scheduler,
+            normalize_loss=True,
         )
         scheduler.step()
         print(time.time() - start_time)
