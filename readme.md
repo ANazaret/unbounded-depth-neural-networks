@@ -20,7 +20,12 @@ The three main experiments of the paper (cifar10, spirl, uci) can be reproduced 
 
 ## Citation
 ```
-
+@inproceedings{nazaret2022variational,
+  title={Variational Inference for Infinitely Deep Neural Networks},
+  author={Nazaret, Achille and Blei, David},
+  booktitle={International Conference on Machine Learning},
+  year={2022},
+}
 ```
 
  
